@@ -8,7 +8,9 @@
 
         public int KnowledgeBaseId { get; set; }
 
-        public string OwnwerUserId { get; set; }
+        public string OwnerUserId { get; set; }
+
+        public string OwnerName { get; set; }
 
         public DateTime CreateDate { get; set; }
 

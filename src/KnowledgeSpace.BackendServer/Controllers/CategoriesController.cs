@@ -75,7 +75,7 @@ namespace KnowledgeSpace.BackendServer.Controllers
                 query = query.Where(x => x.Name.Contains(filter));
             }
             var totalRecords = await query.CountAsync();
-            var items = await query.Skip((pageIndex - 1 * pageSize))
+            var items = await query.Skip((pageIndex - 1) * pageSize)
                 .Take(pageSize)
                 .Select(c => new CategoryVm()
                 {
@@ -150,7 +150,7 @@ namespace KnowledgeSpace.BackendServer.Controllers
 
         [HttpDelete("{id}")]
         [ClaimRequirement(FunctionCode.CONTENT_CATEGORY, CommandCode.DELETE)]
-        public async Task<IActionResult> DeleteCategory(string id)
+        public async Task<IActionResult> DeleteCategory(int id)
         {
             var category = await _context.Categories.FindAsync(id);
             if (category == null)

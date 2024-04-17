@@ -2,6 +2,7 @@
 using KnowledgeSpace.BackendServer.Constants;
 using KnowledgeSpace.BackendServer.Data;
 using KnowledgeSpace.BackendServer.Data.Entities;
+using KnowledgeSpace.BackendServer.Extensions;
 using KnowledgeSpace.BackendServer.Helpers;
 using KnowledgeSpace.BackendServer.Services;
 using KnowledgeSpace.ViewModels;
@@ -29,6 +30,7 @@ namespace KnowledgeSpace.BackendServer.Controllers
         [HttpPost]
         [ClaimRequirement(FunctionCode.CONTENT_KNOWLEDGEBASE, CommandCode.CREATE)]
         [ApiValidationFilter]
+        [Consumes("multipart/form-data")]
         public async Task<IActionResult> PostKnowledgeBase([FromForm] KnowledgeBaseCreateRequest request)
         {
             var knowledgeBase = new KnowledgeBase()
@@ -42,9 +44,16 @@ namespace KnowledgeSpace.BackendServer.Controllers
                 StepToReproduce = request.StepToReproduce,
                 ErrorMessage = request.ErrorMessage,
                 Workaround = request.Workaround,
-                Note = request.Note,
-                Labels = request.Labels,
             };
+            if (request.Labels?.Length > 0)
+            {
+                knowledgeBase.Labels = string.Join(',', request.Labels);
+            }
+            knowledgeBase.OwnerUserId = User.GetUserId();
+            if (string.IsNullOrEmpty(knowledgeBase.SeoAlias))
+            {
+                knowledgeBase.SeoAlias = TextHelper.ToUnsignString(knowledgeBase.Title);
+            }
             knowledgeBase.Id = await _sequenceService.GetKnowledgeBaseId();
 
             //Process attachment
@@ -60,7 +69,7 @@ namespace KnowledgeSpace.BackendServer.Controllers
             _context.KnowledgeBases.Add(knowledgeBase);
 
             //Process label
-            if (!string.IsNullOrEmpty(request.Labels))
+            if (request.Labels?.Length > 0)
             {
                 await ProcessLabel(request, knowledgeBase);
             }
@@ -69,7 +78,7 @@ namespace KnowledgeSpace.BackendServer.Controllers
 
             if (result > 0)
             {
-                return CreatedAtAction(nameof(GetById), new { id = knowledgeBase.Id }, request);
+                return CreatedAtAction(nameof(GetById), new { id = knowledgeBase.Id });
             }
             else
             {
@@ -99,21 +108,24 @@ namespace KnowledgeSpace.BackendServer.Controllers
         [ClaimRequirement(FunctionCode.CONTENT_KNOWLEDGEBASE, CommandCode.VIEW)]
         public async Task<IActionResult> GetKnowledgeBasesPaging([FromQuery] string filter, [FromQuery] int pageIndex, [FromQuery] int pageSize)
         {
-            var query = _context.KnowledgeBases.AsQueryable();
+            var query = from k in _context.KnowledgeBases
+                        join c in _context.Categories on k.CategoryId equals c.Id
+                        select new { k, c };
             if (!string.IsNullOrEmpty(filter))
             {
-                query = query.Where(x => x.Title.Contains(filter));
+                query = query.Where(x => x.k.Title.Contains(filter));
             }
             var totalRecords = await query.CountAsync();
-            var items = await query.Skip((pageIndex - 1 * pageSize))
+            var items = await query.Skip((pageIndex - 1) * pageSize)
                 .Take(pageSize)
                 .Select(kb => new KnowledgeBaseQuickVm()
                 {
-                    Id = kb.Id,
-                    CategoryId = kb.CategoryId,
-                    Title = kb.Title,
-                    SeoAlias = kb.SeoAlias,
-                    Description = kb.Description,
+                    Id = kb.k.Id,
+                    CategoryId = kb.k.CategoryId,
+                    Description = kb.k.Description,
+                    SeoAlias = kb.k.SeoAlias,
+                    Title = kb.k.Title,
+                    CategoryName = kb.c.Name
                 })
                 .ToListAsync();
 
@@ -133,6 +145,16 @@ namespace KnowledgeSpace.BackendServer.Controllers
             if (knowledgeBase == null)
                 return NotFound(new ApiNotFoundResponse(""));
 
+            var attachments = await _context.Attachments
+                .Where(x => x.KnowledgeBaseId == id)
+                .Select(x => new AttachmentVm()
+                {
+                    FileName = x.FileName,
+                    FilePath = x.FilePath,
+                    FileSize = x.FileSize,
+                    Id = x.Id,
+                    FileType = x.FileType
+                }).ToListAsync();
             var knowledgeBaseVm = new KnowledgeBaseVm()
             {
                 Id = knowledgeBase.Id,
@@ -147,20 +169,23 @@ namespace KnowledgeSpace.BackendServer.Controllers
                 Workaround = knowledgeBase.Workaround,
                 Note = knowledgeBase.Note,
                 OwnerUserId = knowledgeBase.OwnerUserId,
-                Labels = knowledgeBase.Labels,
+                Labels = !string.IsNullOrEmpty(knowledgeBase.Labels) ? knowledgeBase.Labels.Split(',') : null,
                 CreateDate = knowledgeBase.CreateDate,
                 LastModifiedDate = knowledgeBase.LastModifiedDate,
                 NumberOfComments = knowledgeBase.NumberOfComments,
                 NumberOfVotes = knowledgeBase.NumberOfVotes,
                 NumberOfReports = knowledgeBase.NumberOfReports,
             };
+            knowledgeBaseVm.Attachments = attachments;
+
             return Ok(knowledgeBaseVm);
         }
 
         [HttpPut("{id}")]
         [ClaimRequirement(FunctionCode.CONTENT_KNOWLEDGEBASE, CommandCode.UPDATE)]
         [ApiValidationFilter]
-        public async Task<IActionResult> PutKnowledgeBase(int id, [FromBody] KnowledgeBaseCreateRequest request)
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> PutKnowledgeBase(int id, [FromForm] KnowledgeBaseCreateRequest request)
         {
             var knowledgeBase = await _context.KnowledgeBases.FindAsync(id);
             if (knowledgeBase == null)
@@ -176,12 +201,22 @@ namespace KnowledgeSpace.BackendServer.Controllers
             knowledgeBase.ErrorMessage = request.ErrorMessage;
             knowledgeBase.Workaround = request.Workaround;
             knowledgeBase.Note = request.Note;
-            knowledgeBase.Labels = request.Labels;
+            knowledgeBase.Labels = string.Join(',', request.Labels);
+
+            //Process attachment
+            if (request.Attachments != null && request.Attachments.Count > 0)
+            {
+                foreach (var attachment in request.Attachments)
+                {
+                    var attachmentEntity = await SaveFile(knowledgeBase.Id, attachment);
+                    _context.Attachments.Add(attachmentEntity);
+                }
+            }
 
             _context.KnowledgeBases.Update(knowledgeBase);
 
             //Process label
-            if (!string.IsNullOrEmpty(request.Labels))
+            if (request.Labels?.Length > 0)
             {
                 await ProcessLabel(request, knowledgeBase);
             }
@@ -222,7 +257,7 @@ namespace KnowledgeSpace.BackendServer.Controllers
                     Workaround = knowledgeBase.Workaround,
                     Note = knowledgeBase.Note,
                     OwnerUserId = knowledgeBase.OwnerUserId,
-                    Labels = knowledgeBase.Labels,
+                    Labels = !string.IsNullOrEmpty(knowledgeBase.Labels) ? knowledgeBase.Labels.Split(',') : null,
                     CreateDate = knowledgeBase.CreateDate,
                     LastModifiedDate = knowledgeBase.LastModifiedDate,
                     NumberOfComments = knowledgeBase.NumberOfComments,
@@ -236,34 +271,34 @@ namespace KnowledgeSpace.BackendServer.Controllers
 
         private async Task ProcessLabel(KnowledgeBaseCreateRequest request, KnowledgeBase knowledgeBase)
         {
-
-            string[] labels = request.Labels.Split(',');
-            foreach (var labelText in labels)
+            foreach (var labelText in request.Labels)
             {
-                var labelId = TextHelper.ToUnsignString(labelText);
+                var labelId = TextHelper.ToUnsignString(labelText.ToString());
                 var existingLabel = await _context.Labels.FindAsync(labelId);
                 if (existingLabel == null)
                 {
                     var labelEntity = new Label()
                     {
                         Id = labelId,
-                        Name = labelText,
+                        Name = labelText.ToString()
                     };
                     _context.Labels.Add(labelEntity);
                 }
-                var labelInKnowledgeBase = new LabelInKnowledgeBase()
+                if (await _context.LabelInKnowledgeBases.FindAsync(labelId, knowledgeBase.Id) == null)
                 {
-                    KnowledgeBaseId = knowledgeBase.Id,
-                    LabelId = labelId
-                };
-                _context.LabelInKnowledgeBases.Add(labelInKnowledgeBase);
+                    _context.LabelInKnowledgeBases.Add(new LabelInKnowledgeBase()
+                    {
+                        KnowledgeBaseId = knowledgeBase.Id,
+                        LabelId = labelId
+                    });
+                }
             }
         }
 
         private async Task<Attachment> SaveFile(int knowledegeBaseId, IFormFile file)
         {
             var originalFileName = ContentDispositionHeaderValue.Parse(file.ContentDisposition).FileName.Trim('"');
-            var fileName = $"{Guid.NewGuid()}{Path.GetExtension(originalFileName)}";
+            var fileName = $"{originalFileName.Substring(0, originalFileName.LastIndexOf('.'))}{Path.GetExtension(originalFileName)}";
             await _storageService.SaveFileAsync(file.OpenReadStream(), fileName);
             var attachmentEntity = new Attachment()
             {
@@ -282,16 +317,20 @@ namespace KnowledgeSpace.BackendServer.Controllers
         [ClaimRequirement(FunctionCode.CONTENT_COMMENT, CommandCode.VIEW)]
         public async Task<IActionResult> GetComments(int knowledgeBaseId)
         {
-            var comments = _context.Comments.Where(c => c.KnowledgeBaseId == knowledgeBaseId);
+            var query = from c in _context.Comments
+                        join u in _context.Users
+                            on c.OwnerUserId equals u.Id
+                        select new { c, u };
 
-            var commentVms = await comments.Select(c => new CommentVm()
+            var commentVms = await query.Select(c => new CommentVm()
             {
-                Id = c.Id,
-                Content = c.Content,
-                CreateDate = c.CreateDate,
-                LastModifiedDate = c.LastModifiedDate,
-                KnowledgeBaseId = c.KnowledgeBaseId,
-                OwnwerUserId = c.OwnwerUserId
+                Id = c.c.Id,
+                Content = c.c.Content,
+                CreateDate = c.c.CreateDate,
+                KnowledgeBaseId = c.c.KnowledgeBaseId,
+                LastModifiedDate = c.c.LastModifiedDate,
+                OwnerUserId = c.c.OwnerUserId,
+                OwnerName = c.u.FirstName + " " + c.u.LastName,
             }).ToListAsync();
 
             return Ok(commentVms);
@@ -299,24 +338,32 @@ namespace KnowledgeSpace.BackendServer.Controllers
 
         [HttpGet("{knowledgeBaseId}/comments/filter")]
         [ClaimRequirement(FunctionCode.CONTENT_COMMENT, CommandCode.VIEW)]
-        public async Task<IActionResult> GetCommentsPaging(int knowledgeBaseId, [FromQuery] string filter, [FromQuery] int pageIndex, [FromQuery] int pageSize)
+        public async Task<IActionResult> GetCommentsPaging(int? knowledgeBaseId, [FromQuery] string filter, [FromQuery] int pageIndex, [FromQuery] int pageSize)
         {
-            var query = _context.Comments.Where(x => x.KnowledgeBaseId == knowledgeBaseId).AsQueryable();
+            var query = from c in _context.Comments
+                        join u in _context.Users
+                            on c.OwnerUserId equals u.Id
+                        select new { c, u };
+            if (knowledgeBaseId.HasValue)
+            {
+                query = query.Where(x => x.c.KnowledgeBaseId == knowledgeBaseId.Value);
+            }
             if (!string.IsNullOrEmpty(filter))
             {
-                query = query.Where(x => x.Content.Contains(filter));
+                query = query.Where(x => x.c.Content.Contains(filter));
             }
             var totalRecords = await query.CountAsync();
-            var items = await query.Skip((pageIndex - 1 * pageSize))
+            var items = await query.Skip((pageIndex - 1) * pageSize)
                 .Take(pageSize)
                 .Select(c => new CommentVm()
                 {
-                    Id = c.Id,
-                    Content = c.Content,
-                    CreateDate = c.CreateDate,
-                    LastModifiedDate = c.LastModifiedDate,
-                    KnowledgeBaseId = c.KnowledgeBaseId,
-                    OwnwerUserId = c.OwnwerUserId,
+                    Id = c.c.Id,
+                    Content = c.c.Content,
+                    CreateDate = c.c.CreateDate,
+                    KnowledgeBaseId = c.c.KnowledgeBaseId,
+                    LastModifiedDate = c.c.LastModifiedDate,
+                    OwnerUserId = c.c.OwnerUserId,
+                    OwnerName = c.u.FirstName + " " + c.u.LastName
                 })
                 .ToListAsync();
 
@@ -336,6 +383,7 @@ namespace KnowledgeSpace.BackendServer.Controllers
             if (comment == null)
                 return NotFound(new ApiNotFoundResponse(""));
 
+            var user = await _context.Users.FindAsync(comment.OwnerUserId);
             var commentVm = new CommentVm()
             {
                 Id = comment.Id,
@@ -343,7 +391,8 @@ namespace KnowledgeSpace.BackendServer.Controllers
                 CreateDate = comment.CreateDate,
                 LastModifiedDate = comment.LastModifiedDate,
                 KnowledgeBaseId = comment.KnowledgeBaseId,
-                OwnwerUserId = comment.OwnwerUserId,
+                OwnerUserId = comment.OwnerUserId,
+                OwnerName = user.FirstName + " " + user.LastName
             };
             return Ok(commentVm);
         }
@@ -357,7 +406,7 @@ namespace KnowledgeSpace.BackendServer.Controllers
             {
                 Content = request.Content,
                 KnowledgeBaseId = request.KnowledgeBaseId,
-                OwnwerUserId = string.Empty /*TODO: GET USER FROM CLAIM*/
+                OwnerUserId = User.GetUserId()
             };
             _context.Comments.Add(comment);
 
@@ -390,7 +439,7 @@ namespace KnowledgeSpace.BackendServer.Controllers
             if (comment == null)
                 return NotFound(new ApiNotFoundResponse(""));
 
-            if (comment.OwnwerUserId != User.Identity.Name)
+            if (comment.OwnerUserId != User.GetUserId())
                 return Forbid();
 
             comment.Content = request.Content;
@@ -432,7 +481,7 @@ namespace KnowledgeSpace.BackendServer.Controllers
                     Id = comment.Id,
                     Content = comment.Content,
                     KnowledgeBaseId = comment.KnowledgeBaseId,
-                    OwnwerUserId = comment.OwnwerUserId,
+                    OwnerUserId = comment.OwnerUserId,
                     CreateDate = comment.CreateDate,
                     LastModifiedDate = comment.LastModifiedDate,
                 };

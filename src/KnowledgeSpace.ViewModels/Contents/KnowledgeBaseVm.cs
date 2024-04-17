@@ -28,7 +28,7 @@
 
         public string OwnerUserId { get; set; }
 
-        public string Labels { get; set; }
+        public string[] Labels { get; set; }
 
         public DateTime CreateDate { get; set; }
 
@@ -39,5 +39,7 @@
         public int? NumberOfVotes { get; set; }
 
         public int? NumberOfReports { get; set; }
+
+        public List<AttachmentVm> Attachments { set; get; }
     }
 }

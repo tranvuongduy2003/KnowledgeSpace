@@ -17,7 +17,7 @@ namespace KnowledgeSpace.ViewModels.UnitTest.Systems
                 LastName = "Test",
                 Password = "Test@123",
                 PhoneNumber = "0123456789",
-                Dob = DateTime.Now,
+                Dob = DateTime.Now.ToString(),
             };
             validator = new UserCreateRequestValidator();
         }

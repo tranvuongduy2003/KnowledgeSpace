@@ -1,6 +1,7 @@
 using FluentValidation.AspNetCore;
 using KnowledgeSpace.BackendServer.Data;
 using KnowledgeSpace.BackendServer.Data.Entities;
+using KnowledgeSpace.BackendServer.Extensions;
 using KnowledgeSpace.BackendServer.IdentityServer;
 using KnowledgeSpace.BackendServer.Services;
 using KnowledgeSpace.ViewModels.Systems;
@@ -11,15 +12,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 using Serilog;
 
-Log.Logger = new LoggerConfiguration()
-    .Enrich.FromLogContext()
-    .WriteTo.Console()
-    .CreateLogger();
+string KspSpecificOrigins = "KspSpecificOrigins";
 
 var builder = WebApplication.CreateBuilder(args);
-
-// Add services to the container
-builder.Services.AddSerilog((loggerConfiguration) => loggerConfiguration.ReadFrom.Configuration(builder.Configuration));
 
 var environmentName = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
 builder.Configuration.SetBasePath(Directory.GetCurrentDirectory())
@@ -27,8 +22,24 @@ builder.Configuration.SetBasePath(Directory.GetCurrentDirectory())
     .AddJsonFile($"appsettings.{environmentName}.json")
     .Build();
 
-// 1. Set up entity framework
+Log.Logger = new LoggerConfiguration()
+    .ReadFrom.Configuration(builder.Configuration)
+    .CreateLogger();
 
+builder.Services.AddSerilog(Log.Logger);
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(KspSpecificOrigins,
+    corsBuilder =>
+    {
+        corsBuilder.WithOrigins(builder.Configuration["AllowOrigins"])
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+    });
+});
+
+// 1. Set up entity framework
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"))
 );
@@ -44,7 +55,7 @@ builder.Services.AddIdentityServer(options =>
     options.Events.RaiseSuccessEvents = true;
 })
 .AddInMemoryApiResources(Config.Apis)
-.AddInMemoryClients(Config.Clients)
+.AddInMemoryClients(builder.Configuration.GetSection("IdentityServer:Clients"))
 .AddInMemoryIdentityResources(Config.Ids)
 .AddInMemoryApiScopes(Config.ApiScopes)
 .AddAspNetIdentity<User>()
@@ -103,6 +114,7 @@ builder.Services.AddRazorPages(options =>
 builder.Services.AddTransient<DbInitializer>();
 builder.Services.AddTransient<IEmailSender, EmailSenderService>();
 builder.Services.AddTransient<ISequenceService, SequenceService>();
+builder.Services.AddTransient<IStorageService, FileStorageService>();
 
 builder.Services.AddSwaggerGen(c =>
 {
@@ -135,6 +147,8 @@ builder.Services.AddSwaggerGen(c =>
 
 var app = builder.Build();
 
+app.UseCors(KspSpecificOrigins);
+
 using (var scope = app.Services.CreateScope())
 {
     var services = scope.ServiceProvider;
@@ -156,6 +170,8 @@ if (app.Environment.IsDevelopment())
 {
     app.UseDeveloperExceptionPage();
 }
+
+app.UseErrorWrapping();
 
 app.UseStaticFiles();
 

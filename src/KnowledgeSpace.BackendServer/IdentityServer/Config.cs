@@ -89,13 +89,12 @@ namespace KnowledgeSpace.BackendServer.IdentityServer
                     RedirectUris = new List<string>
                     {
                         "http://localhost:4200",
-                        "http://localhost:4200/authentication/login-callback",
+                        "http://localhost:4200/login-callback",
                         "http://localhost:4200/silent-renew.html"
                     },
                     PostLogoutRedirectUris = new List<string>
                     {
-                        "http://localhost:4200/unauthorized",
-                        "http://localhost:4200/authentication/logout-callback",
+                        "http://localhost:4200/logout-callback",
                         "http://localhost:4200"
                     },
                     AllowedCorsOrigins = new List<string>
